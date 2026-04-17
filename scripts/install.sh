@@ -48,16 +48,13 @@ systemctl --user status &>/dev/null || {
     warn "systemd user session not fully running yet (this is OK during install)."
 }
 
-# ── 2. Locate Release Binary ──────────────────────────────
-info "Locating pre-compiled binary..."
+# ── 2. Download Prebuilt Binary from GitHub ──────────────────────────────
+info "Downloading prebuilt binary from GitHub Releases..."
 
-# Path to your github-style release folder
-RELEASE_BIN="$SRC_DIR/releases/linux/$APP_NAME"
+LATEST_URL="https://github.com/imrany/session-restore/releases/latest/download/session-restore"
+TMP_BIN="$(mktemp)"
 
-if [[ -f "$RELEASE_BIN" ]]; then
-    BINARY="$RELEASE_BIN"
-    success "Found release binary at $BINARY"
-else
+if [[ -f "$SRC_DIR/src/main.rs" ]]; then
     # checks if cargo exists
     command -v cargo &>/dev/null || error "Rust/cargo not found. Install via: curl https://sh.rustup.rs -sSf | sh"
     # Ensure src/main.rs exists (Cargo standard layout)
@@ -99,6 +96,14 @@ TOML
     BINARY="$SRC_DIR/target/release/$APP_NAME"
     [[ -f "$BINARY" ]] || error "Binary not found at $BINARY — check [package] name in Cargo.toml"
     success "Build complete."
+else
+    info "No source found — downloading prebuilt binary..."
+    if curl -fsSL "$LATEST_URL" -o "$TMP_BIN"; then
+        BINARY="$TMP_BIN"
+        success "Downloaded prebuilt binary."
+    else
+        error "Failed to download prebuilt binary from $LATEST_URL"
+    fi
 fi
 
 # ── 3. Install binary ───────────────────────────────────────
