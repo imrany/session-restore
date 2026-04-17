@@ -2,22 +2,22 @@ use std::process;
 use std::{collections::HashSet, fs, path::PathBuf, process::Command};
 use sysinfo::System;
 
-// Automatically switches based on build profile
-const SESSIONS_FILE_PATH: &str = if cfg!(debug_assertions) {
-    "./sessions.json"
-} else {
-    "/var/lib/session-restore/sessions.json"
-};
-
 fn sessions_file() -> PathBuf {
-    PathBuf::from(SESSIONS_FILE_PATH)
+    if cfg!(debug_assertions) {
+        PathBuf::from("./sessions.json")
+    } else {
+        // Per-user sessions file
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| "default".to_string());
+        PathBuf::from(format!("/var/lib/session-restore/{}/sessions.json", user))
+    }
 }
 
 fn save_session() {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    // Get the UID of the current user running this script
     let current_pid = sysinfo::get_current_pid().expect("Failed to get self PID");
     let my_uid = sys
         .process(current_pid)
@@ -27,7 +27,6 @@ fn save_session() {
     let mut apps: HashSet<String> = HashSet::new();
     let self_pid = process::id();
 
-    // Keywords that identify background helpers or sub-processes we don't want to save
     let blacklisted_keywords = [
         "helper",
         "crashpad",
@@ -38,20 +37,43 @@ fn save_session() {
         "handler",
         "renderer",
         "plugin",
-        "node",
         "daemon",
         "agent",
         "service",
         "dbus",
         "systemd",
-        "session-restore", // don't save ourselves
+        "node",
+        "session-restore",
+        "gnome-shell", // the desktop environment itself
+        "gnome-session",
+        "gjs",             // GNOME JS runtime
+        "xwayland",        // display server
+        "pipewire",        // audio server
+        "wireplumber",     // audio session manager
+        "pulseaudio",      // legacy audio
+        "update-notifier", // system tray background tool
+        "snapd",           // snap daemon
+        "bash",            // shells
+        "sh",
+        "zsh",
+        "fish",
+        "cat", // cli tools that sneak in
+        "grep",
+        "sed",
+        "awk",
+        "less",
+        "more",
+        "at-spi",    // accessibility bus
+        "ibus",      // input method
+        "fcitx",     // input method
+        "zeitgeist", // activity logger
+        "tracker",   // file indexer
     ];
 
-    // Paths where user-facing GUI apps typically live
     let allowed_prefixes = [
         "/opt/",
-        // "/usr/bin/",
-        // "/usr/local/bin/",
+        "/usr/bin/",       // ← FIXED: was commented out
+        "/usr/local/bin/", // ← FIXED: was commented out
         "/snap/",
         "/var/lib/flatpak/",
         "/home/",
@@ -76,7 +98,6 @@ fn save_session() {
                 && in_allowed_path
                 && !is_helper
             {
-                // Deduplicate: only store the base executable path (not per-window instances)
                 apps.insert(exe_str.into_owned());
             }
         }
@@ -85,7 +106,6 @@ fn save_session() {
     let apps_vec: Vec<String> = apps.into_iter().collect();
     let path = sessions_file();
 
-    // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("Failed to create sessions directory");
     }
@@ -110,7 +130,6 @@ fn restore_session() {
                 "[session-restore] No sessions file found at {}. Nothing to restore.",
                 path.display()
             );
-            // Create an empty sessions file so save works next time
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).ok();
             }
@@ -133,12 +152,23 @@ fn restore_session() {
     }
 
     eprintln!("[session-restore] Restoring {} apps...", apps.len());
+    std::thread::sleep(std::time::Duration::from_secs(5));
 
-    // Small delay to let the desktop environment finish loading
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // Pass through display/session environment for GUI apps
+    let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+    let wayland = std::env::var("WAYLAND_DISPLAY").ok();
+    let dbus = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok();
 
     for app in &apps {
-        match Command::new(app).spawn() {
+        let mut cmd = Command::new(app);
+        cmd.env("DISPLAY", &display);
+        if let Some(ref w) = wayland {
+            cmd.env("WAYLAND_DISPLAY", w);
+        }
+        if let Some(ref d) = dbus {
+            cmd.env("DBUS_SESSION_BUS_ADDRESS", d);
+        }
+        match cmd.spawn() {
             Ok(_) => eprintln!("[session-restore] Launched: {}", app),
             Err(e) => eprintln!("[session-restore] Failed to restore '{}': {}", app, e),
         }
@@ -150,7 +180,7 @@ fn list_session() {
     let data = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => {
-            println!("No sessions file found.");
+            println!("No sessions file found at {}", path.display());
             return;
         }
     };
@@ -169,8 +199,8 @@ fn get_app_info() {
     let name = env!("CARGO_PKG_NAME");
     let version = env!("CARGO_PKG_VERSION");
     let authors = env!("CARGO_PKG_AUTHORS");
-
     println!("{} v{} by {}", name, version, authors);
+    println!("Sessions file: {}", sessions_file().display());
 }
 
 fn main() {
@@ -185,8 +215,9 @@ fn main() {
         _ => {
             eprintln!("Usage: session-restore [save|restore|list|info]");
             eprintln!("  save    — snapshot currently running user apps");
-            eprintln!("  restore — relaunch saved apps (default)");
+            eprintln!("  restore — relaunch saved apps");
             eprintln!("  list    — show what's currently saved");
+            eprintln!("  info    — show version and config info");
             process::exit(1);
         }
     }

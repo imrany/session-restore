@@ -128,17 +128,15 @@ cat > "$SERVICE_DIR/${APP_NAME}-save.service" << EOF
 Description=Save open applications before shutdown
 DefaultDependencies=no
 Before=shutdown.target reboot.target halt.target
-Requires=graphical-session.target
-After=graphical-session.target
 
 [Service]
 Type=oneshot
 ExecStart=$INSTALL_DIR/$APP_NAME save
-RemainAfterExit=no
+RemainAfterExit=yes
 TimeoutStopSec=10
 
 [Install]
-WantedBy=default.target
+WantedBy=shutdown.target
 EOF
 
 # ── 5b. Restore-on-login service ────────────────────────────
@@ -192,7 +190,7 @@ echo "    session-restore restore  # relaunch saved apps"
 echo "    session-restore list     # see what's saved"
 echo "    session-restore info     # see app information"
 echo ""
-echo "  Saved session file: $SESSION_DIR/sessions.json"
+echo "  Saved session file: $SESSION_DIR/$USER/sessions.json"
 echo ""
 echo "  To uninstall: curl -fsSL https://raw.githubusercontent.com/imrany/session-restore/main/scripts/install.sh | bash -s -- --uninstall"
 echo ""
