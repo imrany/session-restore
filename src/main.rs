@@ -176,7 +176,7 @@ fn get_app_info() {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("restore");
+    let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("_");
 
     match cmd {
         "save" => save_session(),
