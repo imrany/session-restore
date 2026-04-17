@@ -49,10 +49,9 @@ fn save_session() {
 
     // Paths where user-facing GUI apps typically live
     let allowed_prefixes = [
-        "/home/",
         "/opt/",
-        "/usr/bin/",
-        "/usr/local/bin/",
+        // "/usr/bin/",
+        // "/usr/local/bin/",
         "/snap/",
         "/var/lib/flatpak/",
         "/home/",
