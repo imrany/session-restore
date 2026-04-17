@@ -9,6 +9,7 @@ APP_NAME="session-restore"
 INSTALL_DIR="/usr/local/bin"
 SESSION_DIR="/var/lib/session-restore"
 SERVICE_DIR="$HOME/.config/systemd/user"
+VERSION="v0.2.0"
 # Get the folder where this script is, then go up one level to the project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -51,7 +52,7 @@ systemctl --user status &>/dev/null || {
 # ── 2. Download Prebuilt Binary from GitHub ──────────────────────────────
 info "Downloading prebuilt binary from GitHub Releases..."
 
-LATEST_URL="https://github.com/imrany/session-restore/releases/download/latest/session-restore"
+LATEST_URL="https://github.com/imrany/session-restore/releases/download/$VERSION/session-restore"
 TMP_BIN="$(mktemp)"
 
 if [[ -f "$SRC_DIR/src/main.rs" ]]; then
