@@ -36,7 +36,7 @@ session-restore info     # show app information
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/imrany/session-restore/main/scripts/install.sh | bash install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/imrany/session-restore/main/scripts/install.sh | bash -s -- --uninstall
 ```
 
 This removes the binary and services but keeps your saved sessions file.

@@ -51,7 +51,7 @@ systemctl --user status &>/dev/null || {
 # ── 2. Download Prebuilt Binary from GitHub ──────────────────────────────
 info "Downloading prebuilt binary from GitHub Releases..."
 
-LATEST_URL="https://github.com/imrany/session-restore/releases/latest/download/session-restore"
+LATEST_URL="https://github.com/imrany/session-restore/releases/linux/session-restore"
 TMP_BIN="$(mktemp)"
 
 if [[ -f "$SRC_DIR/src/main.rs" ]]; then
@@ -193,5 +193,5 @@ echo "    session-restore info     # see app information"
 echo ""
 echo "  Saved session file: $SESSION_DIR/sessions.json"
 echo ""
-echo "  To uninstall: bash install.sh --uninstall"
+echo "  To uninstall: curl -fsSL https://raw.githubusercontent.com/imrany/session-restore/main/scripts/install.sh | bash -s -- --uninstall"
 echo ""
