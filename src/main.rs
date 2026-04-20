@@ -6,11 +6,13 @@ fn sessions_file() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("./sessions.json")
     } else {
-        // Per-user sessions file
         let user = std::env::var("USER")
             .or_else(|_| std::env::var("LOGNAME"))
             .unwrap_or_else(|_| "default".to_string());
-        PathBuf::from(format!("/var/lib/session-restore/{}/sessions.json", user))
+        PathBuf::from(format!(
+            "/var/lib/session-restore/{}/sessions.json",
+            user
+        ))
     }
 }
 
@@ -37,43 +39,43 @@ fn save_session() {
         "handler",
         "renderer",
         "plugin",
+        "node",
         "daemon",
         "agent",
         "service",
         "dbus",
         "systemd",
-        "node",
         "session-restore",
-        "gnome-shell", // the desktop environment itself
+        "gnome-shell",
         "gnome-session",
-        "gjs",             // GNOME JS runtime
-        "xwayland",        // display server
-        "pipewire",        // audio server
-        "wireplumber",     // audio session manager
-        "pulseaudio",      // legacy audio
-        "update-notifier", // system tray background tool
-        "snapd",           // snap daemon
-        "bash",            // shells
+        "gjs",
+        "xwayland",
+        "pipewire",
+        "wireplumber",
+        "pulseaudio",
+        "update-notifier",
+        "snapd",
+        "bash",
         "sh",
         "zsh",
         "fish",
-        "cat", // cli tools that sneak in
+        "cat",
         "grep",
         "sed",
         "awk",
         "less",
         "more",
-        "at-spi",    // accessibility bus
-        "ibus",      // input method
-        "fcitx",     // input method
-        "zeitgeist", // activity logger
-        "tracker",   // file indexer
+        "at-spi",
+        "ibus",
+        "fcitx",
+        "zeitgeist",
+        "tracker",
     ];
 
     let allowed_prefixes = [
         "/opt/",
-        "/usr/bin/",       // ← FIXED: was commented out
-        "/usr/local/bin/", // ← FIXED: was commented out
+        "/usr/bin/",
+        "/usr/local/bin/",
         "/snap/",
         "/var/lib/flatpak/",
         "/home/",
@@ -92,6 +94,13 @@ fn save_session() {
             let in_allowed_path = allowed_prefixes
                 .iter()
                 .any(|&prefix| exe_str.starts_with(prefix));
+
+            // Skip processes that haven't been running for at least 30 seconds
+            // This filters out transient CLI tools (cat, bash, grep etc.)
+            // that were only alive because the user ran session-restore save
+            if process.run_time() < 30 {
+                continue;
+            }
 
             if process.user_id() == Some(my_uid)
                 && pid.as_u32() != self_pid
@@ -152,27 +161,51 @@ fn restore_session() {
     }
 
     eprintln!("[session-restore] Restoring {} apps...", apps.len());
-    std::thread::sleep(std::time::Duration::from_secs(5));
 
-    // Pass through display/session environment for GUI apps
+    // Wait for desktop to fully settle before launching apps
+    std::thread::sleep(std::time::Duration::from_secs(8));
+
     let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
-    let wayland = std::env::var("WAYLAND_DISPLAY").ok();
-    let dbus = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok();
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", get_uid()));
 
     for app in &apps {
         let mut cmd = Command::new(app);
-        cmd.env("DISPLAY", &display);
-        if let Some(ref w) = wayland {
+
+        cmd.env("DISPLAY", &display)
+           .env("XDG_RUNTIME_DIR", &xdg_runtime);
+
+        if let Ok(w) = std::env::var("WAYLAND_DISPLAY") {
             cmd.env("WAYLAND_DISPLAY", w);
         }
-        if let Some(ref d) = dbus {
+        if let Ok(d) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
             cmd.env("DBUS_SESSION_BUS_ADDRESS", d);
         }
+        if let Ok(t) = std::env::var("XDG_SESSION_TYPE") {
+            cmd.env("XDG_SESSION_TYPE", t);
+        }
+        if let Ok(d) = std::env::var("XDG_CURRENT_DESKTOP") {
+            cmd.env("XDG_CURRENT_DESKTOP", d);
+        }
+
         match cmd.spawn() {
             Ok(_) => eprintln!("[session-restore] Launched: {}", app),
             Err(e) => eprintln!("[session-restore] Failed to restore '{}': {}", app, e),
         }
     }
+}
+
+fn get_uid() -> u32 {
+    // Safe way to get UID without libc dependency
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|uid| uid.parse().ok())
+        })
+        .unwrap_or(1000)
 }
 
 fn list_session() {
