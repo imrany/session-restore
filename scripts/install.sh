@@ -9,7 +9,7 @@ APP_NAME="session-restore"
 INSTALL_DIR="/usr/local/bin"
 SESSION_DIR="/var/lib/session-restore"
 SERVICE_DIR="$HOME/.config/systemd/user"
-VERSION="v0.2.0"
+VERSION="v0.3.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
