@@ -7,7 +7,7 @@ set -euo pipefail
 
 APP_NAME="session-restore"
 INSTALL_DIR="/usr/local/bin"
-SESSION_DIR="/var/lib/session-restore"
+SESSION_DIR="$HOME/.local/share/session-restore"
 SERVICE_DIR="$HOME/.config/systemd/user"
 VERSION="v0.3.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,6 +83,7 @@ edition = "2021"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sysinfo = "0.38"
+libc = "0.2.185"
 TOML
     success "Cargo.toml created."
   else
@@ -130,14 +131,13 @@ cat >"$SERVICE_DIR/${APP_NAME}-save.service" <<EOF
 [Unit]
 Description=Save open applications before shutdown
 After=graphical-session.target
-Before=graphical-session-pre.target shutdown.target
-Conflicts=graphical-session-pre.target
 
 [Service]
 Type=oneshot
-ExecStart=$INSTALL_DIR/$APP_NAME save
 RemainAfterExit=yes
-TimeoutStopSec=10
+ExecStop=%h/.local/bin/session-restore save
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=graphical-session.target
