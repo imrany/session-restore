@@ -17,8 +17,15 @@ fn sessions_file() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("./sessions.json")
     } else {
-        let user = std::env::var("USER").unwrap_or_else(|_| "default".to_string());
-        PathBuf::from(format!("/var/lib/session-restore/{}/sessions.json", user))
+        let home = std::env::var("HOME").unwrap_or_else(|_| {
+            // Fallback for systemd services where $HOME might be missing
+            std::env::var("USER")
+                .map(|u| format!("/home/{}", u))
+                .unwrap_or_else(|_| ".".to_string())
+        });
+        let mut path = PathBuf::from(home);
+        path.push(".local/share/session-restore/sessions.json");
+        path
     }
 }
 
