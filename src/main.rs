@@ -1,31 +1,56 @@
-use serde::{Deserialize, Serialize};
-use std::process::{self, Command};
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::process;
+use std::{collections::HashSet, fs, path::PathBuf, process::Command};
 use sysinfo::System;
-
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
-struct AppConfig {
-    exe: String,
-    args: Vec<String>,
-    cwd: String,
-}
 
 fn sessions_file() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("./sessions.json")
     } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| {
-            // Fallback for systemd services where $HOME might be missing
-            std::env::var("USER")
-                .map(|u| format!("/home/{}", u))
-                .unwrap_or_else(|_| ".".to_string())
-        });
-        let mut path = PathBuf::from(home);
-        path.push(".local/share/session-restore/sessions.json");
-        path
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| "default".to_string());
+        PathBuf::from(format!("/var/lib/session-restore/{}/sessions.json", user))
+    }
+}
+
+fn get_uid() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|uid| uid.parse().ok())
+        })
+        .unwrap_or(1000)
+}
+
+/// Maps internal binary paths to their proper launcher commands.
+/// Some apps (like Chrome) use a wrapper script that sets up libs/env.
+fn resolve_launch_command(exe: &str) -> Option<String> {
+    let known_mappings: &[(&str, &str)] = &[
+        ("/opt/google/chrome/chrome", "/usr/bin/google-chrome"),
+        (
+            "/opt/google/chrome-beta/chrome",
+            "/usr/bin/google-chrome-beta",
+        ),
+        ("/opt/brave.com/brave/brave", "/usr/bin/brave-browser"),
+        ("/opt/vivaldi/vivaldi-bin", "/usr/bin/vivaldi"),
+        ("/opt/opera/opera", "/usr/bin/opera"),
+        ("/opt/slack/slack", "/usr/bin/slack"),
+        ("/opt/discord/Discord", "/usr/bin/discord"),
+    ];
+
+    for (internal, launcher) in known_mappings {
+        if exe == *internal && std::path::Path::new(launcher).exists() {
+            return Some(launcher.to_string());
+        }
+    }
+
+    if std::path::Path::new(exe).exists() {
+        Some(exe.to_string())
+    } else {
+        None
     }
 }
 
@@ -33,16 +58,16 @@ fn save_session() {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    let my_pid = sysinfo::get_current_pid().expect("Failed to get self PID");
+    let current_pid = sysinfo::get_current_pid().expect("Failed to get self PID");
     let my_uid = sys
-        .process(my_pid)
+        .process(current_pid)
         .and_then(|p| p.user_id())
-        .expect("Failed to get UID");
+        .expect("Failed to get current user UID");
 
-    let mut apps: HashSet<AppConfig> = HashSet::new();
-    let mut seen_exes: HashSet<String> = HashSet::new();
+    let mut apps: HashSet<String> = HashSet::new();
+    let self_pid = process::id();
 
-    let blacklisted = [
+    let blacklisted_keywords = [
         "helper",
         "crashpad",
         "srv",
@@ -52,173 +77,186 @@ fn save_session() {
         "handler",
         "renderer",
         "plugin",
-        "node",
         "daemon",
         "agent",
         "service",
         "dbus",
         "systemd",
-        "gnome-",
-        "gsd-",
-        "gvfs",
-        "at-spi",
-        "ibus",
-        "xdg-",
-        "mutter",
+        "session-restore",
+        "gnome-shell",
+        "gnome-session",
+        "gjs",
+        "xwayland",
         "pipewire",
         "wireplumber",
         "pulseaudio",
-        "evolution-",
-        "gjs",
-        "session-restore",
-        "Xwayland",
-        "snapd-desktop-integration",
         "update-notifier",
-        "cat",
+        "snapd",
         "bash",
         "sh",
+        "zsh",
+        "fish",
+        "cat",
+        "grep",
+        "sed",
+        "awk",
+        "less",
+        "more",
+        "at-spi",
+        "ibus",
+        "fcitx",
+        "zeitgeist",
+        "tracker",
+        "bwrap",
+        "mpris-proxy",
+        "ubuntu-report",
+        "python",
+        "perl",
+        "ruby",
+        "snap",
     ];
 
-    let home_dir = std::env::var("HOME").unwrap_or_default();
-    let local_dir = format!("{}/.local/", home_dir);
-
     let allowed_prefixes = [
+        "/opt/",
         "/usr/bin/",
         "/usr/local/bin/",
-        "/opt/",
         "/snap/",
-        &local_dir,
+        "/var/lib/flatpak/",
+        "/home/",
     ];
 
     for (pid, process) in sys.processes() {
         if let Some(exe_path) = process.exe() {
-            let exe_str = exe_path.to_string_lossy().to_string();
+            let exe_str = exe_path.to_string_lossy();
             let name = process.name().to_string_lossy().to_lowercase();
+            let exe_lower = exe_str.to_lowercase();
 
-            if seen_exes.contains(&exe_str) {
-                continue;
-            }
-
-            if process.user_id() != Some(my_uid) || pid == &my_pid || process.run_time() < 30 {
-                continue;
-            }
-
-            if blacklisted
+            let is_helper = blacklisted_keywords
                 .iter()
-                .any(|&k| name.contains(k) || exe_str.contains(k))
-            {
-                continue;
-            }
+                .any(|&k| exe_lower.contains(k) || name.contains(k));
 
-            // The "Root Process" Logic for Chrome/Electron
-            // Most browsers use a 'type=' argument for child processes (renderer, gpu-process, etc.)
-            // We ONLY want the one that doesn't have a 'type' argument.
-            let is_browser_child = process
-                .cmd()
-                .iter()
-                .any(|arg| arg.to_string_lossy().contains("--type="));
-            if (name.contains("chrome") || name.contains("brave") || name.contains("edge"))
-                && is_browser_child
-            {
-                continue;
-            }
-
-            // Allowed path check
             let in_allowed_path = allowed_prefixes
                 .iter()
                 .any(|&prefix| exe_str.starts_with(prefix));
 
-            if in_allowed_path && !exe_str.contains("/libexec/") {
-                let config = AppConfig {
-                    exe: exe_str.clone(),
-                    args: process
-                        .cmd()
-                        .iter()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .skip(1)
-                        .collect(),
-                    cwd: process
-                        .cwd()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                };
-                apps.insert(config);
-                seen_exes.insert(exe_str);
+            if process.run_time() < 30 {
+                continue;
+            }
+
+            if process.user_id() == Some(my_uid)
+                && pid.as_u32() != self_pid
+                && in_allowed_path
+                && !is_helper
+            {
+                let exe_owned = exe_str.into_owned();
+                if let Some(launch_cmd) = resolve_launch_command(&exe_owned) {
+                    apps.insert(launch_cmd);
+                }
             }
         }
     }
 
+    let apps_vec: Vec<String> = apps.into_iter().collect();
     let path = sessions_file();
+
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
+        fs::create_dir_all(parent).expect("Failed to create sessions directory");
     }
-    fs::write(&path, serde_json::to_string_pretty(&apps).unwrap()).expect("Write failed");
+
+    fs::write(&path, serde_json::to_string_pretty(&apps_vec).unwrap())
+        .expect("Failed to write session file");
+
     eprintln!(
         "[session-restore] Saved {} apps to {}",
-        apps.len(),
+        apps_vec.len(),
         path.display()
     );
 }
 
 fn restore_session() {
     let path = sessions_file();
-    let data = fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
-    let apps: Vec<AppConfig> = serde_json::from_str(&data).unwrap_or_default();
 
+    let data = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => {
+            eprintln!(
+                "[session-restore] No sessions file found at {}. Nothing to restore.",
+                path.display()
+            );
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            fs::write(&path, "[]").unwrap_or_else(|e| eprintln!("{}", e));
+            return;
+        }
+    };
+
+    let apps: Vec<String> = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[session-restore] Failed to parse sessions file: {}", e);
+            return;
+        }
+    };
+
+    if apps.is_empty() {
+        eprintln!("[session-restore] No apps to restore.");
+        return;
+    }
+
+    eprintln!("[session-restore] Restoring {} apps...", apps.len());
+    std::thread::sleep(std::time::Duration::from_secs(8));
+
+    // Snapshot running processes to detect already-running apps
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    // Get currently running exes to prevent duplicates
-    let active_exes: HashSet<String> = sys
-        .processes()
-        .values()
-        .filter_map(|p| p.exe().map(|e| e.to_string_lossy().to_string()))
-        .collect();
+    let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+    let xdg_runtime =
+        std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", get_uid()));
 
-    let service_flags = ["--gapplication-service", "--tray", "--background"];
-    for mut app in apps {
-        if active_exes.contains(&app.exe) {
-            eprintln!("[session-restore] Skipping (already running): {}", app.exe);
+    for app in &apps {
+        // Skip if binary doesn't exist on disk
+        if !std::path::Path::new(app).exists() {
+            eprintln!("[session-restore] Skipping (not found): {}", app);
             continue;
         }
 
-        // remove the 'service' or 'tray' flag so a window actually opens
-        app.args
-            .retain(|arg| !service_flags.contains(&arg.as_str()));
-
-        let mut cmd = Command::new(&app.exe);
-        cmd.args(&app.args);
-        if !app.cwd.is_empty() {
-            cmd.current_dir(&app.cwd);
+        // Skip if already running
+        let already_running = sys.processes().values().any(|p| {
+            p.exe()
+                .map(|e| e.to_string_lossy() == app.as_str())
+                .unwrap_or(false)
+        });
+        if already_running {
+            eprintln!("[session-restore] Skipping (already running): {}", app);
+            continue;
         }
 
-        // Pass essential GUI env vars
-        for var in [
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "XDG_RUNTIME_DIR",
-            "DBUS_SESSION_BUS_ADDRESS",
-        ] {
-            if let Ok(val) = std::env::var(var) {
-                cmd.env(var, val);
-            }
+        let mut cmd = Command::new(app);
+        cmd.env("DISPLAY", &display)
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            // Detach from terminal completely
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        if let Ok(w) = std::env::var("WAYLAND_DISPLAY") {
+            cmd.env("WAYLAND_DISPLAY", w);
         }
-
-        // Detach the process so it doesn't print logs to your terminal or die when you close it
-        cmd.stdout(process::Stdio::null());
-        cmd.stderr(process::Stdio::null());
-
-        #[cfg(unix)]
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid(); // Create a new session so the child is a true orphan
-                Ok(())
-            });
+        if let Ok(d) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+            cmd.env("DBUS_SESSION_BUS_ADDRESS", d);
+        }
+        if let Ok(t) = std::env::var("XDG_SESSION_TYPE") {
+            cmd.env("XDG_SESSION_TYPE", t);
+        }
+        if let Ok(d) = std::env::var("XDG_CURRENT_DESKTOP") {
+            cmd.env("XDG_CURRENT_DESKTOP", d);
         }
 
         match cmd.spawn() {
-            Ok(_) => eprintln!("[session-restore] Relaunched: {}", app.exe),
-            Err(e) => eprintln!("[session-restore] Error: {} -> {}", app.exe, e),
+            Ok(_) => eprintln!("[session-restore] Relaunched: {}", app),
+            Err(e) => eprintln!("[session-restore] Error: {} -> {}", app, e),
         }
     }
 }
@@ -232,14 +270,13 @@ fn list_session() {
             return;
         }
     };
-    let apps: Vec<AppConfig> = serde_json::from_str(&data).unwrap_or_default();
+    let apps: Vec<String> = serde_json::from_str(&data).unwrap_or_default();
     if apps.is_empty() {
         println!("No saved apps.");
     } else {
         println!("Saved apps ({}):", apps.len());
         for app in apps {
-            // Print the exe and the directory it will open in
-            println!("  {} (in {})", app.exe, app.cwd);
+            println!("  {}", app);
         }
     }
 }
